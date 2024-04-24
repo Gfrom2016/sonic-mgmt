@@ -248,12 +248,15 @@ def get_dut_vlan_ptf_ports(mg_facts):
     return ports
 
 
-def is_all_neighbors_learned(duthost, speaker_ips):
+def is_all_neighbors_learned(duthost, speaker_ips, original_accepted_prefixes):
     bgp_facts = duthost.bgp_facts()['ansible_facts']
     for ip in speaker_ips:
-        if not str(ip.ip) in bgp_facts['bgp_neighbors']:
+        if (not str(ip.ip) in bgp_facts['bgp_neighbors']) or \
+                (not str(ip.ip) in original_accepted_prefixes):
             return False
-        if not bgp_facts['bgp_neighbors'][str(ip.ip)]['accepted prefixes'] == 1:
+        before = original_accepted_prefixes[str(ip.ip)]['accepted prefixes']
+        after = bgp_facts['bgp_neighbors'][str(ip.ip)]['accepted prefixes']
+        if not before + 1 == after:
             return False
     return True
 
@@ -270,6 +273,14 @@ def bgp_speaker_announce_routes_common(common_setup_teardown, tbinfo, duthost,
     assert http_ready
     asic_type = duthost.facts["asic_type"]
 
+    # Check neighbors' accepted prefixes before announcing routes
+    bgp_facts = duthost.bgp_facts()['ansible_facts']
+    original_accepted_prefixes = bgp_facts['bgp_neighbors']
+    for ip in speaker_ips:
+        if str(ip.ip) in original_accepted_prefixes:
+            logger.info("Accepted prefixes for %s: %d" % (str(ip.ip),
+                                                          original_accepted_prefixes[str(ip.ip)]['accepted prefixes']))
+
     logger.info("announce route")
     peer_range = mg_facts['minigraph_bgp_peers_with_range'][0]['ip_range'][0]
     lo_addr = mg_facts['minigraph_lo_interfaces'][0]['addr']
@@ -280,7 +291,7 @@ def bgp_speaker_announce_routes_common(common_setup_teardown, tbinfo, duthost,
     announce_route(ptfip, lo_addr, peer_range, vlan_ips[0].ip, port_num[2])
 
     logger.info("Wait some time to make sure routes announced to dynamic bgp neighbors")
-    assert wait_until(90, 10, 0, is_all_neighbors_learned, duthost, speaker_ips), \
+    assert wait_until(90, 10, 0, is_all_neighbors_learned, duthost, speaker_ips, original_accepted_prefixes), \
         "Not all dynamic neighbors were learned"
 
     logger.info("Verify nexthops and nexthop interfaces for accepted prefixes of the dynamic neighbors")
