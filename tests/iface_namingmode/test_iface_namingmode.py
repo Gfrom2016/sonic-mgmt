@@ -317,7 +317,7 @@ class TestShowInterfaces():
             if regex_int.match(line):
                 interfaces.append(regex_int.match(line).group(0))
 
-        assert(len(interfaces) > 0)
+        assert (len(interfaces) > 0)
 
         for item in interfaces:
             if mode == 'alias':
@@ -551,7 +551,7 @@ class TestShowQueue():
                 intfsChecked += 1
 
         # At least one interface should have been checked to have a valid result
-        assert(intfsChecked > 0)
+        assert (intfsChecked > 0)
 
     def test_show_queue_counters_interface(self, setup_config_mode, sample_intf):
         """
@@ -643,12 +643,8 @@ class TestShowQueue():
 # Tests to be run in t0/m0 topology
 
 
+@pytest.mark.topology('t0', 'm0')
 class TestShowVlan():
-
-    @pytest.fixture(scope="class", autouse=True)
-    def setup_check_topo(self, tbinfo):
-        if tbinfo['topo']['type'] not in ['t0', 'm0']:
-            pytest.skip('Unsupported topology')
 
     @pytest.fixture()
     def setup_vlan(self, setup_config_mode):
@@ -720,13 +716,9 @@ class TestShowVlan():
         assert v_intf in show_vlan
 
 
-# Tests to be run in t1 topology
+# Tests to be run in t1/t2 topology
+@pytest.mark.topology('t1', 't2')
 class TestConfigInterface():
-
-    @pytest.fixture(scope="class", autouse=True)
-    def setup_check_topo(self, tbinfo):
-        if tbinfo['topo']['type'] not in ['t2', 't1']:
-            pytest.skip('Unsupported topology')
 
     @pytest.fixture(scope='class', autouse=True)
     def reset_config_interface(self, duthosts, enum_rand_one_per_hwsku_frontend_hostname, sample_intf):
@@ -934,15 +926,14 @@ def test_show_interfaces_neighbor_expected(setup, setup_config_mode, tbinfo, dut
                 assert re.search(r'{}\s+{}'.format(key, value['name']), show_int_neighbor) is not None
 
 
+@pytest.mark.topology('t1', 't2')
 class TestNeighbors():
 
     @pytest.fixture(scope="class", autouse=True)
-    def setup_check_topo(self, setup, tbinfo, duthosts, enum_rand_one_per_hwsku_frontend_hostname):
-        if tbinfo['topo']['type'] not in ['t2', 't1']:
-            pytest.skip('Unsupported topology')
+    def setup_check_topo(self, setup, duthosts, enum_rand_one_per_hwsku_frontend_hostname):
         duthost = duthosts[enum_rand_one_per_hwsku_frontend_hostname]
         if duthost.is_multi_asic:
-            pytest.skip("CLI not supported")
+            pytest.skip("CLI not supported on multi-asic")
 
         if not setup['physical_interfaces']:
             pytest.skip('No non-portchannel member interface present')
@@ -999,13 +990,11 @@ class TestNeighbors():
                     assert re.search(r'{}.*\s+{}'.format(addr, detail['interface']), ndp_output) is not None
 
 
+@pytest.mark.topology('t1', 't2')
 class TestShowIP():
 
     @pytest.fixture(scope="class", autouse=True)
-    def setup_check_topo(self, setup, tbinfo):
-        if tbinfo['topo']['type'] not in ['t2', 't1']:
-            pytest.skip('Unsupported topology')
-
+    def setup_check_topo(self, setup):
         if not setup['physical_interfaces']:
             pytest.skip('No non-portchannel member interface present')
 
