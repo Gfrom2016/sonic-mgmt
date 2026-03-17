@@ -362,11 +362,20 @@ TUNNEL_TABLE_KEY = "TUNNEL_DECAP_TABLE:IPINIP_TUNNEL"
 DECAP_RULE_FIELDS = ["dscp_mode", "ecn_mode", "ttl_mode", "tunnel_type"]
 
 
-def _read_decap_rules(duthost):
-    """Return default IPINIP_TUNNEL configuration from APP_DB as a dict."""
+def _read_decap_rules(duthost, asic_index=None):
+    """Return default IPINIP_TUNNEL configuration from APP_DB as a dict.
+
+    Args:
+        duthost: DUT host object
+        asic_index: ASIC index for multi-ASIC platforms (None for single-ASIC)
+    """
+    if asic_index is not None:
+        db_prefix = "sonic-db-cli -n asic{} APP_DB".format(asic_index)
+    else:
+        db_prefix = "sonic-db-cli APP_DB"
     rules = {}
     for field in DECAP_RULE_FIELDS:
-        cmd = "redis-cli -n 0 hget '{}' '{}'".format(TUNNEL_TABLE_KEY, field)
+        cmd = "{} hget '{}' '{}'".format(db_prefix, TUNNEL_TABLE_KEY, field)
         res = duthost.shell(cmd, module_ignore_errors=True)
         value = (res.get("stdout") or "").strip()
         if value:
@@ -374,19 +383,28 @@ def _read_decap_rules(duthost):
     return rules
 
 
-def _verify_decap_rules(duthost, context=""):
+def _verify_decap_rules(duthost, asic_index=None, context=""):
     """Assert that IPINIP_TUNNEL decap rules are present in APP_DB."""
-    rules = _read_decap_rules(duthost)
+    label = "asic{}".format(asic_index) if asic_index is not None else "host"
+    rules = _read_decap_rules(duthost, asic_index=asic_index)
     pytest_assert(
         rules.get("tunnel_type") == "IPINIP",
-        "IPINIP_TUNNEL not found on {} {}".format(duthost.hostname, context)
+        "IPINIP_TUNNEL not found on {} {} {}".format(duthost.hostname, label, context)
     )
     pytest_assert(
         "dscp_mode" in rules and "ecn_mode" in rules and "ttl_mode" in rules,
-        "Incomplete decap rules on {}: {} {}".format(duthost.hostname, rules, context)
+        "Incomplete decap rules on {} {}: {} {}".format(duthost.hostname, label, rules, context)
     )
-    logger.info("Decap rules verified on %s: %s %s", duthost.hostname, rules, context)
+    logger.info("Decap rules verified on %s %s: %s %s", duthost.hostname, label, rules, context)
     return rules
+
+
+def _get_asic_indices(duthost):
+    """Return list of ASIC indices for multi-ASIC, or [None] for single-ASIC."""
+    num_asics = duthost.num_asics()
+    if num_asics <= 1:
+        return [None]
+    return list(range(num_asics))
 
 
 @pytest.mark.disable_loganalyzer
@@ -403,10 +421,10 @@ def test_decap_after_warm_reboot(
     Test Gap: https://github.com/sonic-net/sonic-mgmt/issues/16480
 
     Test steps:
-        1. Verify default IPINIP_TUNNEL decap rules in APP_DB
-        2. Run IPinIP traffic test to confirm decap works
-        3. Perform warm-reboot on the DUT
-        4. Verify decap rules are still present in APP_DB with same values
+        1. Verify default IPINIP_TUNNEL decap rules in APP_DB (all ASICs)
+        2. Run IPinIP traffic test (all supported IP version combos)
+        3. Save config and perform warm-reboot on the DUT
+        4. Verify decap rules still present with same values (all ASICs)
         5. Run IPinIP traffic test again to confirm decap still works
     """
     duthost = duthosts[rand_one_dut_hostname]
@@ -414,10 +432,14 @@ def test_decap_after_warm_reboot(
     asic_type = duthost.facts["asic_type"]
     ttl_mode = supported_ttl_dscp_params["ttl"]
     dscp_mode = supported_ttl_dscp_params["dscp"]
+    asic_indices = _get_asic_indices(duthost)
 
-    # ---- Step 1: Verify decap rules before warm-reboot ----
+    # ---- Step 1: Verify decap rules before warm-reboot (all ASICs) ----
     logger.info("Step 1: Verifying decap rules before warm-reboot on %s", duthost.hostname)
-    pre_reboot_rules = _verify_decap_rules(duthost, context="(before warm-reboot)")
+    pre_reboot_rules = {}
+    for idx in asic_indices:
+        pre_reboot_rules[idx] = _verify_decap_rules(
+            duthost, asic_index=idx, context="(before warm-reboot)")
 
     # ---- Step 2: Verify decap traffic before warm-reboot ----
     logger.info("Step 2: Running decap traffic test before warm-reboot")
@@ -431,28 +453,34 @@ def test_decap_after_warm_reboot(
         duts_minigraph_facts=duts_minigraph_facts,
         mux_status_from_nic_simulator=mux_status_from_nic_simulator,
         setup_info=setup_info,
-        outer_ipv4=True, outer_ipv6=False,
-        inner_ipv4=True, inner_ipv6=False,
+        outer_ipv4=setup_info["outer_ipv4"],
+        outer_ipv6=setup_info["outer_ipv6"],
+        inner_ipv4=setup_info["inner_ipv4"],
+        inner_ipv6=setup_info["inner_ipv6"],
         ttl_mode=ttl_mode, dscp_mode=dscp_mode, asic_type=asic_type,
     )
 
-    # ---- Step 3: Warm-reboot ----
-    logger.info("Step 3: Performing warm-reboot on %s", duthost.hostname)
+    # ---- Step 3: Save config and warm-reboot ----
+    logger.info("Step 3: Saving config and performing warm-reboot on %s", duthost.hostname)
+    duthost.shell("config save -y")
     reboot(duthost, localhost, reboot_type="warm",
            wait_warmboot_finalizer=True, safe_reboot=True,
            check_intf_up_ports=True, wait_for_bgp=True)
     logger.info("Warm-reboot completed on %s", duthost.hostname)
 
-    # ---- Step 4: Verify decap rules after warm-reboot ----
+    # ---- Step 4: Verify decap rules after warm-reboot (all ASICs) ----
     logger.info("Step 4: Verifying decap rules after warm-reboot on %s", duthost.hostname)
-    post_reboot_rules = _verify_decap_rules(duthost, context="(after warm-reboot)")
-
-    pytest_assert(
-        pre_reboot_rules == post_reboot_rules,
-        "Decap rules changed after warm-reboot on {}: before={}, after={}".format(
-            duthost.hostname, pre_reboot_rules, post_reboot_rules)
-    )
-    logger.info("Decap rules match before and after warm-reboot")
+    for idx in asic_indices:
+        post_rules = _verify_decap_rules(
+            duthost, asic_index=idx, context="(after warm-reboot)")
+        pytest_assert(
+            pre_reboot_rules[idx] == post_rules,
+            "Decap rules changed after warm-reboot on {} {}: before={}, after={}".format(
+                duthost.hostname,
+                "asic{}".format(idx) if idx is not None else "host",
+                pre_reboot_rules[idx], post_rules)
+        )
+    logger.info("Decap rules match before and after warm-reboot on all ASICs")
 
     # ---- Step 5: Verify decap traffic after warm-reboot ----
     logger.info("Step 5: Running decap traffic test after warm-reboot")
@@ -466,8 +494,10 @@ def test_decap_after_warm_reboot(
         duts_minigraph_facts=duts_minigraph_facts,
         mux_status_from_nic_simulator=mux_status_from_nic_simulator,
         setup_info=setup_info,
-        outer_ipv4=True, outer_ipv6=False,
-        inner_ipv4=True, inner_ipv6=False,
+        outer_ipv4=setup_info["outer_ipv4"],
+        outer_ipv6=setup_info["outer_ipv6"],
+        inner_ipv4=setup_info["inner_ipv4"],
+        inner_ipv6=setup_info["inner_ipv6"],
         ttl_mode=ttl_mode, dscp_mode=dscp_mode, asic_type=asic_type,
     )
 
