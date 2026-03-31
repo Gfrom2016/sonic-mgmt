@@ -220,7 +220,13 @@ def sample_intf(setup, duthosts, enum_rand_one_per_hwsku_frontend_hostname):
     interface_info['default'] = interface
     interface_info['asic_index'] = asic_index
     interface_info['alias'] = setup['port_name_map'][interface]
-    interface_info['native_speed'] = setup['port_speed'][interface_info['alias']]
+    # Read native_speed from CONFIG_DB (actual deployed speed) instead of
+    # port_alias (platform default), since the testbed may deploy a different
+    # speed than the platform default (e.g., O8V48 defaults to 200G but
+    # testbed runs at 100G due to fanout limitations).
+    db_cmd = 'sudo {} CONFIG_DB HGET "PORT|{}" speed'.format(
+        duthost.asic_instance(asic_index).sonic_db_cli, interface)
+    interface_info['native_speed'] = duthost.shell(db_cmd)['stdout']
     interface_info['cli_ns_option'] = duthost.asic_instance(asic_index).cli_ns_option
 
     return interface_info
@@ -1281,6 +1287,13 @@ class TestConfigInterface():
             "Interface speed mismatch after restoring to native speed. "
             "Expected native speed: '{}', actual speed: '{}'."
         ).format(native_speed, speed)
+
+        # Verify port comes back up after speed restore to catch
+        # cases where the restored speed is incompatible with the link partner
+        pytest_assert(
+            wait_until(PORT_TOGGLE_TIMEOUT, 2, 0, duthost.links_status_up, [interface]),
+            "Interface {} did not come back up after restoring speed to {}".format(interface, native_speed)
+        )
 
     def test_config_interface_speed_40G_100G(self, setup_config_mode, sample_intf, duthosts, fanouthosts,
                                              enum_rand_one_per_hwsku_frontend_hostname):
