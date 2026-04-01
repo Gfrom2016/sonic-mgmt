@@ -162,8 +162,15 @@ def setup_config_mode(ansible_adhoc, duthosts, enum_rand_one_per_hwsku_frontend_
     mode = request.param
 
     logger.info('Creating a guest user')
+    # Remove any stale guest user from a previous failed run to ensure
+    # a clean home directory and .bashrc are created.
+    duthost.user(name='guest', state='absent', remove='yes', force='yes')
     duthost.user(name='guest', groups='sudo', state='present', shell='/bin/bash')
     duthost.shell('echo guest:guest | sudo chpasswd')
+    # Ensure .bashrc exists — config interface_naming_mode writes to it
+    # and will crash if the file is missing (e.g. on Trixie-based images).
+    duthost.shell('sudo test -f /home/guest/.bashrc || sudo cp /etc/skel/.bashrc /home/guest/.bashrc '
+                  '&& sudo chown guest:guest /home/guest/.bashrc')
 
     logger.info('Configuring the interface naming mode as {} for the guest user'.format(mode))
     dutHostGuest = AnsibleHostBase(ansible_adhoc, duthost.hostname, become_user='guest')
